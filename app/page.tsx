@@ -62,7 +62,7 @@ export default function Home() {
       sdp: await sdpResponse.text(),
     };
 
-    await pc.setRemoteDescription(answer);
+    await pc.setRemoteDescription(answer as RTCSessionDescriptionInit);
   };
 
   return (
