@@ -1,76 +1,118 @@
 "use client";
 
+import { useState } from "react";
+
 export default function Home() {
+  const [status, setStatus] = useState("idle");
+  const [logs, setLogs] = useState<string[]>([]);
+
+  const addLog = (msg: string) => {
+    setLogs((prev) => [...prev, msg]);
+  };
 
   const startVoice = async () => {
-    // ① トークン取得
-    const tokenRes = await fetch(
-      "https://realtime-api-backend-g6f4ddfzh3dsc9fa.japanwest-01.azurewebsites.net/realtime/session",
-      { method: "POST" }
-    );
+    try {
+      setStatus("connecting...");
+      addLog("🔑 セッション取得中...");
 
-    const tokenData = await tokenRes.json();
+      const tokenRes = await fetch(
+        "https://realtime-api-backend-g6f4ddfzh3dsc9fa.japanwest-01.azurewebsites.net/realtime/session",
+        { method: "POST" }
+      );
 
-    const EPHEMERAL_KEY = tokenData.client_secret.value;
+      const tokenData = await tokenRes.json();
+      const EPHEMERAL_KEY = tokenData.client_secret.value;
 
-    // ② PeerConnection
-    const pc = new RTCPeerConnection();
+      addLog("✅ セッション取得OK");
 
-    // 🎤 マイク取得
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-    });
+      const pc = new RTCPeerConnection();
 
-    stream.getTracks().forEach((track) => {
-      pc.addTrack(track, stream);
-    });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      });
 
-    // 🔊 音声受信
-    pc.ontrack = (event) => {
-      const audio = document.createElement("audio");
-      audio.srcObject = event.streams[0];
-      audio.autoplay = true;
-    };
+      stream.getTracks().forEach((track) => {
+        pc.addTrack(track, stream);
+      });
 
-    // 📡 DataChannel
-    const dc = pc.createDataChannel("oai-events");
+      pc.ontrack = (event) => {
+        const audio = document.createElement("audio");
+        audio.srcObject = event.streams[0];
+        audio.autoplay = true;
+      };
 
-    dc.onmessage = (e) => {
-      console.log("AI:", e.data);
-    };
+      const dc = pc.createDataChannel("oai-events");
 
-    // ③ Offer作成
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+      dc.onmessage = (e) => {
+        addLog("🤖 " + e.data);
+      };
 
-    // ④ OpenAIに送信
-    const response = await fetch(
-      "https://api.openai.com/v1/realtime",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${EPHEMERAL_KEY}`,
-          "Content-Type": "application/sdp",
-        },
-        body: offer.sdp,
-      }
-    );
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
 
-    const answerSDP = await response.text();
+      const response = await fetch(
+        "https://api.openai.com/v1/realtime",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${EPHEMERAL_KEY}`,
+            "Content-Type": "application/sdp",
+          },
+          body: offer.sdp,
+        }
+      );
 
-    // ⑤ Answer設定
-    await pc.setRemoteDescription({
-      type: "answer",
-      sdp: answerSDP,
-    });
+      const answerSDP = await response.text();
+
+      await pc.setRemoteDescription({
+        type: "answer",
+        sdp: answerSDP,
+      });
+
+      setStatus("connected");
+      addLog("🎤 音声接続完了！");
+    } catch (err) {
+      console.error(err);
+      setStatus("error");
+      addLog("❌ エラー発生");
+    }
   };
 
   return (
-    <div style={{ padding: 20 }}>
-      <h1>Realtime Voice AI 🎤</h1>
-      <button onClick={startVoice}>
-        音声開始
-      </button>
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white flex items-center justify-center">
+      <div className="w-full max-w-xl p-6 bg-white/5 backdrop-blur rounded-2xl shadow-xl border border-white/10">
+
+        <h1 className="text-3xl font-bold mb-4 text-center">
+          🎤 Realtime Voice AI
+        </h1>
+
+        {/* ステータス */}
+        <div className="mb-4 text-center">
+          <span className="px-3 py-1 rounded-full text-sm bg-blue-500/20">
+            Status: {status}
+          </span>
+        </div>
+
+        {/* ボタン */}
+        <div className="flex justify-center mb-6">
+          <button
+            onClick={startVoice}
+            className="bg-blue-500 hover:bg-blue-600 transition px-6 py-3 rounded-xl font-semibold shadow-lg"
+          >
+            🎙 音声開始
+          </button>
+        </div>
+
+        {/* ログ */}
+        <div className="h-64 overflow-y-auto bg-black/40 p-4 rounded-xl border border-white/10 text-sm space-y-2">
+          {logs.map((log, i) => (
+            <div key={i} className="opacity-90">
+              {log}
+            </div>
+          ))}
+        </div>
+
+      </div>
     </div>
   );
 }
