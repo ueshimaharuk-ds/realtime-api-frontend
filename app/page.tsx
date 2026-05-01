@@ -1,34 +1,22 @@
 "use client";
-import { useRef } from "react";
 
 export default function Home() {
-  const pcRef = useRef<RTCPeerConnection | null>(null);
 
   const startVoice = async () => {
-    // ① セッション取得
-    const tokenRes = await fetch("https://realtime-api-backend-g6f4ddfzh3dsc9fa.japanwest-01.azurewebsites.net/realtime/session", {
-      method: "POST",
-    });
+    // ① トークン取得
+    const tokenRes = await fetch(
+      "https://realtime-api-backend-g6f4ddfzh3dsc9fa.japanwest-01.azurewebsites.net/realtime/session",
+      { method: "POST" }
+    );
+
     const tokenData = await tokenRes.json();
-    console.log("tokenData:", tokenData);
 
     const EPHEMERAL_KEY = tokenData.client_secret.value;
-    
-    // ② PeerConnection作成
+
+    // ② PeerConnection
     const pc = new RTCPeerConnection();
-    pcRef.current = pc;
 
-    // ③ 音声受信設定
-    const audioEl = document.createElement("audio");
-    audioEl.autoplay = true;
-
-    pc.ontrack = (e) => {
-      audioEl.srcObject = e.streams[0];
-    };
-
-
-
-    // ④ マイク取得
+    // 🎤 マイク取得
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: true,
     });
@@ -37,40 +25,51 @@ export default function Home() {
       pc.addTrack(track, stream);
     });
 
-    // ⑤ データチャネル（任意）
-    pc.createDataChannel("oai-events");
+    // 🔊 音声受信
+    pc.ontrack = (event) => {
+      const audio = document.createElement("audio");
+      audio.srcObject = event.streams[0];
+      audio.autoplay = true;
+    };
 
-    // ⑥ SDP作成
+    // 📡 DataChannel
+    const dc = pc.createDataChannel("oai-events");
+
+    dc.onmessage = (e) => {
+      console.log("AI:", e.data);
+    };
+
+    // ③ Offer作成
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    // ⑦ OpenAIへ接続
-    const baseUrl = "https://api.openai.com/v1/realtime";
-    const model = "gpt-4o-realtime-preview";
+    // ④ OpenAIに送信
+    const response = await fetch(
+      "https://api.openai.com/v1/realtime",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${EPHEMERAL_KEY}`,
+          "Content-Type": "application/sdp",
+        },
+        body: offer.sdp,
+      }
+    );
 
-    const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
-      method: "POST",
-      body: offer.sdp,
-      headers: {
-        Authorization: `Bearer ${EPHEMERAL_KEY}`,
-        "Content-Type": "application/sdp",
-      },
-    });
+    const answerSDP = await response.text();
 
-    const answer = {
+    // ⑤ Answer設定
+    await pc.setRemoteDescription({
       type: "answer",
-      sdp: await sdpResponse.text(),
-    };
-
-    await pc.setRemoteDescription(answer as RTCSessionDescriptionInit);
+      sdp: answerSDP,
+    });
   };
 
   return (
     <div style={{ padding: 20 }}>
-      <h1>Realtime Voice Chat</h1>
-
+      <h1>Realtime Voice AI 🎤</h1>
       <button onClick={startVoice}>
-        🎤 音声開始
+        音声開始
       </button>
     </div>
   );
