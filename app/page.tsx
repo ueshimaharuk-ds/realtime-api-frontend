@@ -6,7 +6,7 @@ export default function Home() {
 
   const startVoice = async () => {
     // ① セッション取得
-    const tokenRes = await fetch("https://realtime-api-backend.azurewebsites.net/realtime/session", {
+    const tokenRes = await fetch("https://realtime-api-backend-g6f4ddfzh3dsc9fa.japanwest-01.azurewebsites.net/realtime/session", {
       method: "POST",
     });
     const tokenData = await tokenRes.json();
