@@ -1,10 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 export default function Home() {
+  const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
   const [logs, setLogs] = useState<string[]>([]);
+
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   const addLog = (msg: string) => {
     setLogs((prev) => [...prev, msg]);
@@ -26,10 +30,12 @@ export default function Home() {
       addLog("✅ セッション取得OK");
 
       const pc = new RTCPeerConnection();
+      pcRef.current = pc;
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
       });
+      streamRef.current = stream;
 
       stream.getTracks().forEach((track) => {
         pc.addTrack(track, stream);
@@ -70,11 +76,34 @@ export default function Home() {
       });
 
       setStatus("connected");
-      addLog("🎤 音声接続完了！");
+      addLog("🎤 接続完了");
     } catch (err) {
       console.error(err);
       setStatus("error");
       addLog("❌ エラー発生");
+    }
+  };
+
+  const stopVoice = () => {
+    addLog("🛑 停止処理");
+
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+
+    pcRef.current?.close();
+    pcRef.current = null;
+
+    setStatus("stopped");
+  };
+
+  // 🔥 トグル処理
+  const handleToggle = async () => {
+    if (isRunning) {
+      stopVoice();
+      setIsRunning(false);
+    } else {
+      await startVoice();
+      setIsRunning(true);
     }
   };
 
@@ -93,22 +122,24 @@ export default function Home() {
           </span>
         </div>
 
-        {/* ボタン */}
+        {/* 🔥 トグルボタン */}
         <div className="flex justify-center mb-6">
           <button
-            onClick={startVoice}
-            className="bg-blue-500 hover:bg-blue-600 transition px-6 py-3 rounded-xl font-semibold shadow-lg"
+            onClick={handleToggle}
+            className={`px-6 py-3 rounded-xl font-semibold shadow-lg transition
+              ${isRunning
+                ? "bg-red-500 hover:bg-red-600"
+                : "bg-blue-500 hover:bg-blue-600"
+              }`}
           >
-            🎙 音声開始
+            {isRunning ? "⏹ 停止" : "🎙 音声開始"}
           </button>
         </div>
 
         {/* ログ */}
         <div className="h-64 overflow-y-auto bg-black/40 p-4 rounded-xl border border-white/10 text-sm space-y-2">
           {logs.map((log, i) => (
-            <div key={i} className="opacity-90">
-              {log}
-            </div>
+            <div key={i}>{log}</div>
           ))}
         </div>
 
