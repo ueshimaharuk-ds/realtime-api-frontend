@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
-const BACKEND_URL = "https://realtime-api-backend-g6f4ddfzh3dsc9fa.japanwest-01.azurewebsites.net";
+const BACKEND_WS_URL = "wss://realtime-api-backend-g6f4ddfzh3dsc9fa.japanwest-01.azurewebsites.net";
 
 export default function Home() {
   const [isRunning, setIsRunning] = useState(false);
@@ -10,24 +10,97 @@ export default function Home() {
   const [logs, setLogs] = useState<string[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const logsEndRef = useRef<HTMLDivElement | null>(null);
 
   const addLog = (msg: string) => {
     setLogs((prev) => [...prev, `${new Date().toLocaleTimeString()}: ${msg}`]);
   };
 
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs]);
+
+  // PCM16に変換
+  const float32ToPcm16 = (float32Array: Float32Array): ArrayBuffer => {
+    const buffer = new ArrayBuffer(float32Array.length * 2);
+    const view = new DataView(buffer);
+    for (let i = 0; i < float32Array.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32Array[i]));
+      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+  };
+
+  // Base64エンコード
+  const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  };
+
   const startVoice = async () => {
     try {
       setStatus("connecting...");
-      addLog("🔑 バックエンドに接続中...");
+      addLog("🔌 バックエンドに接続中...");
 
-      // バックエンドのWSプロキシに直接接続（Vertex AIには直接繋がない）
-      const wsUrl = BACKEND_URL.replace("https://", "wss://");
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(BACKEND_WS_URL);
       socketRef.current = ws;
 
-      ws.onopen = () => {
+      ws.onopen = async () => {
         setStatus("connected");
         addLog("✅ Gemini Live 接続成功");
+        addLog("🎤 マイク起動中...");
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              sampleRate: 16000,
+              channelCount: 1,
+              echoCancellation: true,
+              noiseSuppression: true,
+            },
+          });
+          streamRef.current = stream;
+
+          const audioContext = new AudioContext({ sampleRate: 16000 });
+          audioContextRef.current = audioContext;
+
+          const source = audioContext.createMediaStreamSource(stream);
+          const processor = audioContext.createScriptProcessor(4096, 1, 1);
+          processorRef.current = processor;
+
+          processor.onaudioprocess = (e) => {
+            if (ws.readyState !== WebSocket.OPEN) return;
+            const float32 = e.inputBuffer.getChannelData(0);
+            const pcm16 = float32ToPcm16(float32);
+            const base64 = arrayBufferToBase64(pcm16);
+
+            const msg = {
+              realtime_input: {
+                media_chunks: [
+                  {
+                    mime_type: "audio/pcm",
+                    data: base64,
+                  },
+                ],
+              },
+            };
+            ws.send(JSON.stringify(msg));
+          };
+
+          source.connect(processor);
+          processor.connect(audioContext.destination);
+          addLog("🎙 音声送信中...");
+        } catch (err) {
+          addLog("❌ マイクアクセス失敗");
+          console.error(err);
+        }
       };
 
       ws.onmessage = async (event) => {
@@ -39,10 +112,15 @@ export default function Home() {
           }
 
           if (response.serverContent?.modelTurn?.parts?.[0]?.inlineData) {
-            addLog("🔊 音声バイナリデータを受信");
+            addLog("🔊 音声応答受信");
+            // 音声再生（将来的にAudioWorkletで実装）
+          }
+
+          if (response.setupComplete) {
+            addLog("⚙️ Geminiセットアップ完了");
           }
         } catch {
-          // バイナリデータ等パース不要なものは無視
+          // バイナリ等無視
         }
       };
 
@@ -53,7 +131,7 @@ export default function Home() {
       };
 
       ws.onclose = () => {
-        addLog("🔌 接続が切断されました");
+        addLog("🔌 接続切断");
         setStatus("disconnected");
         setIsRunning(false);
       };
@@ -67,9 +145,20 @@ export default function Home() {
   };
 
   const stopVoice = () => {
-    addLog("🛑 停止処理");
+    addLog("🛑 停止");
+
+    processorRef.current?.disconnect();
+    processorRef.current = null;
+
+    audioContextRef.current?.close();
+    audioContextRef.current = null;
+
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+
     socketRef.current?.close();
     socketRef.current = null;
+
     setIsRunning(false);
     setStatus("stopped");
   };
@@ -101,6 +190,7 @@ export default function Home() {
         {logs.map((log, i) => (
           <div key={i} className="mb-1">{log}</div>
         ))}
+        <div ref={logsEndRef} />
       </div>
     </div>
   );
