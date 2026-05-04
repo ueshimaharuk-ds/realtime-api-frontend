@@ -15,6 +15,11 @@ export default function Home() {
   const streamRef = useRef<MediaStream | null>(null);
   const logsEndRef = useRef<HTMLDivElement | null>(null);
 
+  // 音声再生キュー
+  const audioQueueRef = useRef<AudioBuffer[]>([]);
+  const isPlayingRef = useRef(false);
+  const nextPlayTimeRef = useRef(0);
+
   const addLog = (msg: string) => {
     setLogs((prev) => [...prev, `${new Date().toLocaleTimeString()}: ${msg}`]);
   };
@@ -23,7 +28,6 @@ export default function Home() {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
 
-  // PCM16に変換
   const float32ToPcm16 = (float32Array: Float32Array): ArrayBuffer => {
     const buffer = new ArrayBuffer(float32Array.length * 2);
     const view = new DataView(buffer);
@@ -34,7 +38,6 @@ export default function Home() {
     return buffer;
   };
 
-  // Base64エンコード
   const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
     const bytes = new Uint8Array(buffer);
     let binary = "";
@@ -42,6 +45,42 @@ export default function Home() {
       binary += String.fromCharCode(bytes[i]);
     }
     return btoa(binary);
+  };
+
+  const base64ToPcmAudioBuffer = (base64: string, audioContext: AudioContext): AudioBuffer => {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const pcm16 = new Int16Array(bytes.buffer);
+    const float32 = new Float32Array(pcm16.length);
+    for (let i = 0; i < pcm16.length; i++) {
+      float32[i] = pcm16[i] / 0x8000;
+    }
+    // Geminiの出力は24kHz
+    const audioBuffer = audioContext.createBuffer(1, float32.length, 24000);
+    audioBuffer.copyToChannel(float32, 0);
+    return audioBuffer;
+  };
+
+  const scheduleAudio = (base64: string) => {
+    const audioContext = audioContextRef.current;
+    if (!audioContext) return;
+
+    try {
+      const audioBuffer = base64ToPcmAudioBuffer(base64, audioContext);
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContext.destination);
+
+      // 途切れないよう連続スケジューリング
+      const startTime = Math.max(audioContext.currentTime, nextPlayTimeRef.current);
+      source.start(startTime);
+      nextPlayTimeRef.current = startTime + audioBuffer.duration;
+    } catch (e) {
+      console.error("音声スケジュールエラー:", e);
+    }
   };
 
   const startVoice = async () => {
@@ -70,6 +109,7 @@ export default function Home() {
 
           const audioContext = new AudioContext({ sampleRate: 16000 });
           audioContextRef.current = audioContext;
+          nextPlayTimeRef.current = 0;
 
           const source = audioContext.createMediaStreamSource(stream);
           const processor = audioContext.createScriptProcessor(4096, 1, 1);
@@ -80,18 +120,11 @@ export default function Home() {
             const float32 = e.inputBuffer.getChannelData(0);
             const pcm16 = float32ToPcm16(float32);
             const base64 = arrayBufferToBase64(pcm16);
-
-            const msg = {
+            ws.send(JSON.stringify({
               realtime_input: {
-                media_chunks: [
-                  {
-                    mime_type: "audio/pcm",
-                    data: base64,
-                  },
-                ],
+                media_chunks: [{ mime_type: "audio/pcm", data: base64 }],
               },
-            };
-            ws.send(JSON.stringify(msg));
+            }));
           };
 
           source.connect(processor);
@@ -105,22 +138,39 @@ export default function Home() {
 
       ws.onmessage = async (event) => {
         try {
-          const response = JSON.parse(event.data);
-
-          if (response.serverContent?.modelTurn?.parts?.[0]?.text) {
-            addLog(`🤖 Gemini: ${response.serverContent.modelTurn.parts[0].text}`);
+          let data: string;
+          if (event.data instanceof Blob) {
+            data = await event.data.text();
+          } else {
+            data = event.data;
           }
 
-          if (response.serverContent?.modelTurn?.parts?.[0]?.inlineData) {
-            addLog("🔊 音声応答受信");
-            // 音声再生（将来的にAudioWorkletで実装）
-          }
+          const response = JSON.parse(data);
 
           if (response.setupComplete) {
             addLog("⚙️ Geminiセットアップ完了");
           }
+
+          const parts = response.serverContent?.modelTurn?.parts;
+          if (parts) {
+            for (const part of parts) {
+              if (part.text) {
+                addLog(`🤖 Gemini: ${part.text}`);
+              }
+              if (part.inlineData?.mimeType === "audio/pcm" && part.inlineData?.data) {
+                scheduleAudio(part.inlineData.data);
+              }
+            }
+          }
+
+          if (response.serverContent?.interrupted) {
+            addLog("⚡ 応答割り込み");
+            // 割り込み時は再生タイムラインをリセット
+            nextPlayTimeRef.current = audioContextRef.current?.currentTime ?? 0;
+          }
+
         } catch {
-          // バイナリ等無視
+          // パース不能データは無視
         }
       };
 
@@ -146,19 +196,15 @@ export default function Home() {
 
   const stopVoice = () => {
     addLog("🛑 停止");
-
+    nextPlayTimeRef.current = 0;
     processorRef.current?.disconnect();
     processorRef.current = null;
-
     audioContextRef.current?.close();
     audioContextRef.current = null;
-
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
-
     socketRef.current?.close();
     socketRef.current = null;
-
     setIsRunning(false);
     setStatus("stopped");
   };
